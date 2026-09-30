@@ -12,11 +12,17 @@ import Cardano.Crypto.Peras (
  )
 import Cardano.Crypto.Peras.Cert (
   PerasCert (..),
+  PerasCertSize (..),
   mkPerasCertVoters,
   perasCertNumberOfNonPersistentVoters,
   perasCertNumberOfVoters,
+  perasCertSizeUpperBound,
   perasCertVoterSeats,
   perasCertVotersFromSeats,
+ )
+import Cardano.Crypto.Peras.Vote (
+  PerasVote (..),
+  PerasVoteEligibilityProof (..),
  )
 import Cardano.Slotting.Slot (WithOrigin (..))
 import qualified Data.Bitmap as Bitmap
@@ -24,6 +30,7 @@ import qualified Data.ByteString as BS
 import Data.Either (isLeft)
 import qualified Data.List.NonEmpty as NonEmpty
 import Test.Cardano.Crypto.Peras.Gen (
+  genPerasCert,
   genPerasCertVoters,
   genPerasVRFOutput,
   perasSigningKeyFromSeedByte,
@@ -71,6 +78,20 @@ spec = do
         minimalCertMessage
         (unPerasSignature (pcSignature minimalCert))
         `shouldBe` Right ()
+    it "computes the upper bound for the minimal certificate" $
+      perasCertSizeUpperBound minimalCert `shouldBe` PerasCertSize 136
+    prop "perasCertSizeUpperBound is at least the constant overhead" $
+      forAll (genPerasCert True) $ \c ->
+        unPerasCertSize (perasCertSizeUpperBound c) >= 136
+
+  describe "PerasVote" $ do
+    it "a vote's signature verifies under its key" $
+      verifyDSIGN
+        ()
+        (deriveVerKeyDSIGN minimalVoteKey)
+        minimalVoteMessage
+        (unPerasSignature (pvSignature minimalVote))
+        `shouldBe` Right ()
 
 minimalCert :: PerasCert
 minimalCert =
@@ -86,3 +107,19 @@ minimalCertKey = perasSigningKeyFromSeedByte 0x2a
 
 minimalCertMessage :: BS.ByteString
 minimalCertMessage = "peras-golden-message"
+
+minimalVote :: PerasVote
+minimalVote =
+  PerasVote
+    { pvRoundNo = 0
+    , pvBoostedBlock = PerasBoostedBlock Origin
+    , pvSeatIndex = PerasSeatIndex 0
+    , pvEligibilityProof = PersistentPerasVoteEligibilityProof
+    , pvSignature = PerasSignature (signDSIGN () minimalVoteMessage minimalVoteKey)
+    }
+
+minimalVoteKey :: PerasSigningKey
+minimalVoteKey = perasSigningKeyFromSeedByte 0x2b
+
+minimalVoteMessage :: BS.ByteString
+minimalVoteMessage = "peras-golden-vote-message"

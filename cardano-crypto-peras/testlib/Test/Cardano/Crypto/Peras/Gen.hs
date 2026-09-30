@@ -13,6 +13,8 @@ module Test.Cardano.Crypto.Peras.Gen (
   genBitmap,
   genPerasCertVoters,
   genPerasCert,
+  genPerasVoteEligibilityProof,
+  genPerasVote,
   generateWith,
 ) where
 
@@ -32,6 +34,10 @@ import Cardano.Crypto.Peras.Cert (
   PerasCert (..),
   PerasCertVoters,
   perasCertVotersFromSeats,
+ )
+import Cardano.Crypto.Peras.Vote (
+  PerasVote (..),
+  PerasVoteEligibilityProof (..),
  )
 import Cardano.Crypto.Seed (mkSeedFromBytes)
 import Cardano.Slotting.Slot (SlotNo (..), WithOrigin (..))
@@ -123,6 +129,22 @@ genPerasCert allowNonPersistent =
     <$> genPerasRoundNo
     <*> genPerasBoostedBlock
     <*> genPerasCertVoters allowNonPersistent
+    <*> genPerasSignature
+
+genPerasVoteEligibilityProof :: Gen PerasVoteEligibilityProof
+genPerasVoteEligibilityProof =
+  frequency
+    [ (1, pure PersistentPerasVoteEligibilityProof)
+    , (1, NonPersistentPerasVoteEligibilityProof <$> genPerasVRFOutput)
+    ]
+
+genPerasVote :: Gen PerasVote
+genPerasVote =
+  PerasVote
+    <$> genPerasRoundNo
+    <*> genPerasBoostedBlock
+    <*> genPerasSeatIndex
+    <*> genPerasVoteEligibilityProof
     <*> genPerasSignature
 
 generateWith :: Integral i => Gen a -> i -> a
