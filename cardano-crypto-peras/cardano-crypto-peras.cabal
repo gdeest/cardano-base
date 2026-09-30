@@ -77,10 +77,7 @@ test-suite tests
     Test.Cardano.Crypto.Peras
 
   build-depends:
-    base16-bytestring,
     bytestring,
-    cardano-base:testlib,
-    cardano-binary,
     cardano-crypto-class,
     cardano-crypto-peras:{cardano-crypto-peras, testlib},
     cardano-slotting,

@@ -1,8 +1,8 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE OverloadedStrings #-}
 
 module Cardano.Crypto.Peras.Cert (
   PerasCertVoters (UnsafePerasCertVoters, perasCertVotersBitmap, perasCertNonPersistentVRFOutputs),
@@ -16,22 +16,16 @@ module Cardano.Crypto.Peras.Cert (
   PerasBoostedBlock (..),
   PerasSignature (..),
   PerasVRFOutput (..),
+  PerasCertSize (..),
+  perasCertSizeUpperBound,
 ) where
 
-import Cardano.Binary (
-  FromCBOR (..),
-  ToCBOR (..),
-  decodeCollection,
-  decodeListLenOrIndef,
-  encodeListLen,
- )
 import Cardano.Crypto.Peras (
   PerasBoostedBlock (..),
   PerasRoundNo (..),
   PerasSeatIndex (..),
   PerasSignature (..),
   PerasVRFOutput (..),
-  decodeRecordOfSize,
  )
 import Control.DeepSeq (NFData)
 import Control.Monad (unless, when)
@@ -41,7 +35,7 @@ import Data.List (sortOn)
 import Data.List.NonEmpty (NonEmpty (..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (catMaybes, isJust, isNothing)
-import Data.Word (Word16)
+import Data.Word (Word16, Word32)
 import GHC.Generics (Generic)
 import NoThunks.Class (NoThunks)
 
@@ -113,18 +107,6 @@ perasCertNumberOfVoters = Bitmap.numSetBits . perasCertVotersBitmap
 perasCertNumberOfNonPersistentVoters :: PerasCertVoters -> Int
 perasCertNumberOfNonPersistentVoters = length . perasCertNonPersistentVRFOutputs
 
-instance ToCBOR PerasCertVoters where
-  toCBOR UnsafePerasCertVoters {perasCertVotersBitmap, perasCertNonPersistentVRFOutputs} =
-    encodeListLen 2
-      <> toCBOR perasCertVotersBitmap
-      <> toCBOR perasCertNonPersistentVRFOutputs
-
-instance FromCBOR PerasCertVoters where
-  fromCBOR = decodeRecordOfSize "PerasCertVoters" 2 $ do
-    bitmap <- fromCBOR
-    vrfOutputs <- decodeCollection decodeListLenOrIndef fromCBOR
-    either fail pure (mkPerasCertVoters bitmap vrfOutputs)
-
 {-------------------------------------------------------------------------------
    Certificates
 -------------------------------------------------------------------------------}
@@ -144,19 +126,34 @@ data PerasCert = PerasCert
   deriving stock (Show, Eq, Ord, Generic)
   deriving anyclass (NoThunks, NFData)
 
-instance ToCBOR PerasCert where
-  toCBOR PerasCert {pcRoundNo, pcBoostedBlock, pcVoters, pcSignature} =
-    encodeListLen 4
-      <> toCBOR pcRoundNo
-      <> toCBOR pcBoostedBlock
-      <> toCBOR pcVoters
-      <> toCBOR pcSignature
+-- | Size of a serialised 'PerasCert', in bytes.
+newtype PerasCertSize = PerasCertSize {unPerasCertSize :: Word32}
+  deriving stock (Show, Eq, Ord, Generic)
+  deriving newtype (NoThunks, NFData)
 
-instance FromCBOR PerasCert where
-  fromCBOR =
-    decodeRecordOfSize "PerasCert" 4 $
-      PerasCert
-        <$> fromCBOR
-        <*> fromCBOR
-        <*> fromCBOR
-        <*> fromCBOR
+-- | An upper bound (not necessarily tight) on the size, in bytes, of a
+-- serialised 'PerasCert'.
+--
+-- The three constants below are themselves upper bounds (in bits, not
+-- bytes) on the CBOR encoding of the certificate's fixed overhead, of each
+-- voter's contribution to the voters bitmap, and of each non-persistent
+-- voter's additional VRF output, respectively. For their derivation, see
+-- <https://github.com/IntersectMBO/ouroboros-consensus/pull/2187#discussion_r3955585768>.
+perasCertSizeUpperBound :: PerasCert -> PerasCertSize
+perasCertSizeUpperBound cert =
+  PerasCertSize . fromIntegral $
+    (`divCeiling` 8) $
+      constSize
+        + numVoters * sizePerVoter
+        + numNonPersistentVoters * extraSizePerNonPersistentVoter
+  where
+    numNonPersistentVoters = perasCertNumberOfNonPersistentVoters (pcVoters cert)
+    numVoters = perasCertNumberOfVoters (pcVoters cert)
+
+    constSize = 135 * 8
+    sizePerVoter = 1
+    extraSizePerNonPersistentVoter = 50 * 8
+
+    divCeiling n d = q + min 1 r
+      where
+        (q, r) = n `quotRem` d
