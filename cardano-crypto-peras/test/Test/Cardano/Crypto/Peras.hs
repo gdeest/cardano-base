@@ -4,6 +4,7 @@
 module Test.Cardano.Crypto.Peras (spec) where
 
 import Cardano.Crypto.DSIGN (deriveVerKeyDSIGN, signDSIGN, verifyDSIGN)
+import Cardano.Crypto.DSIGN.BLS12381 (minSigPoPDST)
 import Cardano.Crypto.Peras (
   PerasBoostedBlock (..),
   PerasSeatIndex (..),
@@ -80,7 +81,7 @@ spec = do
   describe "PerasCert" $ do
     it "the minimal certificate's signature verifies under its key" $
       verifyDSIGN
-        ()
+        minSigPoPDST
         (deriveVerKeyDSIGN minimalCertKey)
         minimalCertMessage
         (unPerasSignature (pcSignature minimalCert))
@@ -94,7 +95,7 @@ spec = do
   describe "PerasVote" $ do
     it "a vote's signature verifies under its key" $
       verifyDSIGN
-        ()
+        minSigPoPDST
         (deriveVerKeyDSIGN minimalVoteKey)
         minimalVoteMessage
         (unPerasSignature (pvSignature minimalVote))
@@ -106,7 +107,7 @@ minimalCert =
     { pcRoundNo = 0
     , pcBoostedBlock = PerasBoostedBlock Origin
     , pcVoters = either error id (mkPerasCertVoters (perasVotersBitmapFromSeats 0 [PerasSeatIndex 0]) [])
-    , pcSignature = PerasSignature (signDSIGN () minimalCertMessage minimalCertKey)
+    , pcSignature = PerasSignature (signDSIGN minSigPoPDST minimalCertMessage minimalCertKey)
     }
 
 minimalCertKey :: PerasSigningKey
@@ -122,7 +123,7 @@ minimalVote =
     , pvBoostedBlock = PerasBoostedBlock Origin
     , pvSeatIndex = PerasSeatIndex 0
     , pvEligibilityProof = PersistentPerasVoteEligibilityProof
-    , pvSignature = PerasSignature (signDSIGN () minimalVoteMessage minimalVoteKey)
+    , pvSignature = PerasSignature (signDSIGN minSigPoPDST minimalVoteMessage minimalVoteKey)
     }
 
 minimalVoteKey :: PerasSigningKey

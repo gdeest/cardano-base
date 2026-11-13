@@ -18,6 +18,7 @@ module Test.Cardano.Crypto.Peras.Gen (
 ) where
 
 import Cardano.Crypto.DSIGN (SigDSIGN, genKeyDSIGN, seedSizeDSIGN, signDSIGN)
+import Cardano.Crypto.DSIGN.BLS12381 (minSigPoPDST)
 import Cardano.Crypto.Peras (
   PerasBlockRef (..),
   PerasBoostedBlock (..),
@@ -68,7 +69,7 @@ genRawSignature = do
   sk <- genPerasSigningKey
   msgLen <- choose (0, 256)
   msg <- genByteString msgLen
-  pure $ signDSIGN () msg sk
+  pure $ signDSIGN minSigPoPDST msg sk
 
 genPerasSignature :: Gen PerasSignature
 genPerasSignature = PerasSignature <$> genRawSignature
