@@ -27,6 +27,7 @@ module Cardano.Crypto.Leios (
   LeiosCommittee (..),
   mkLeiosCommittee,
   leiosCommitteeSize,
+  MaxLeiosCommitteeSize,
   maxLeiosCommitteeSize,
   resolveLeiosSeat,
   getLeiosSeatId,
@@ -41,9 +42,6 @@ module Cardano.Crypto.Leios (
   -- ** Verification
   VerificationError (..),
   verifyLeiosCert,
-
-  -- * Bitfield wire-format helpers
-  BitField (..),
 ) where
 
 import Cardano.Binary.FixedSizeCodec (
@@ -70,6 +68,7 @@ import Data.ByteString (ByteString)
 import Data.Data (Proxy (..))
 import Data.Function ((&))
 import Data.Functor ((<&>))
+import qualified Data.IntSet as IntSet
 import Data.List.NonEmpty (NonEmpty, nonEmpty)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -82,7 +81,16 @@ import qualified Data.Vector.Strict as V
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import GHC.Stack (HasCallStack)
+import GHC.TypeNats (natVal)
 import NoThunks.Class (NoThunks, OnlyCheckWhnfNamed (..))
+
+-- | Most seats a committee can have: 'LeiosSeatId' is a 'Word16', so seats past
+-- this could not be addressed by a vote.
+type MaxLeiosCommitteeSize = 65536
+
+-- | 'MaxLeiosCommitteeSize' as a value.
+maxLeiosCommitteeSize :: Int
+maxLeiosCommitteeSize = fromIntegral $ natVal (Proxy @MaxLeiosCommitteeSize)
 
 -- | The signature scheme used by Leios, per CIP-164: the BLS12-381
 -- minimal-signature-size proof-of-possession ciphersuite. The DSTs are fixed
@@ -162,11 +170,6 @@ mkLeiosCommittee seats =
 leiosCommitteeSize :: LeiosCommittee -> Int
 leiosCommitteeSize = length . leiosCommitteeSeats
 
--- | Most seats a committee can have: 'LeiosSeatId' is a 'Word16', so seats past
--- this could not be addressed by a vote.
-maxLeiosCommitteeSize :: Int
-maxLeiosCommitteeSize = fromIntegral @Word16 @Int maxBound + 1
-
 -- | Resolve a 'LeiosSeatId' to its 'LeiosSeat' on the 'LeiosCommittee', or 'Nothing'
 -- if the index is past the committee bound.
 resolveLeiosSeat :: LeiosCommittee -> LeiosSeatId -> Maybe LeiosSeat
@@ -194,7 +197,10 @@ getLeiosSeatId vk committee =
 -- committee seats signed, plus their aggregate signature. Build via
 -- 'aggregateLeiosCert', verify via 'verifyLeiosCert'.
 data LeiosCert = LeiosCert
-  { leiosCertSigners :: !BitField
+  { leiosCertSigners :: !(Bitmap MaxLeiosCommitteeSize)
+  -- ^ Which seats signed a 'LeiosCert', bit @i@ standing for seat @i@. Its
+  -- capacity is the largest addressable committee, not the committee at hand,
+  -- which 'verifyLeiosCert' checks the signers against.
   , leiosCertSignature :: !LeiosSignature
   }
   deriving stock (Show, Eq, Generic)
@@ -236,14 +242,14 @@ aggregateLeiosCert committee sigs = do
       [vid | vid <- Map.keys sigs, isNothing $ resolveLeiosSeat committee vid]
 
     leiosCertSigners =
-      BitField $
-        Bitmap.fromIndices n [fromIntegral @Word16 @Int i | LeiosSeatId i <- Map.keys sigs]
+      Bitmap.fromIndices $
+        IntSet.fromDistinctAscList [fromIntegral @Word16 @Int i | LeiosSeatId i <- Map.keys sigs]
 
     n = leiosCommitteeSize committee
 
 data VerificationError
-  = -- | 'leiosCertSigners' is not @⌈leiosCommitteeSize\/8⌉@ bytes, so its bits do
-    -- not line up with this committee's seats.
+  = -- | 'leiosCertSigners' names a seat at or past 'leiosCommitteeSize', which
+    -- this committee does not have.
     MalformedSigners
   | -- | The committee has more than 'maxLeiosCommitteeSize' seats, so its tail
     -- seats have no 'LeiosSeatId' to be named by and a bit standing for one
@@ -277,15 +283,15 @@ verifyLeiosCert ::
   Either VerificationError Weight
 verifyLeiosCert committee weightRequired msg cert = do
   -- Judge the committee before judging the bitfield against it: past this bound a
-  -- seat index no longer fits the 'Word16' that 'bitFieldMembers' casts to, so
+  -- seat index no longer fits the 'Word16' that 'toSeatId' casts to, so
   -- bits would silently wrap onto the wrong seats.
   when (n > maxLeiosCommitteeSize) $
     Left (MalformedCommittee n)
-  -- Bitfield length is fixed at ⌈committee/8⌉ bytes; anything else is malformed.
-  when (Bitmap.sizeInBytes cert.leiosCertSigners.bitFieldBitmap /= Bitmap.numBytes n) $
+  -- The signers' capacity is the largest committee, so bound them by this one.
+  when (maybe False (>= n) $ Bitmap.maxSetIndex cert.leiosCertSigners) $
     Left MalformedSigners
-  -- Set bits are in-bounds by construction, so each resolves to a keyed or keyless seat.
-  let seats = [(vid, resolveLeiosSeat committee vid) | vid <- bitFieldMembers cert.leiosCertSigners]
+  -- Every signer is now a seat, keyed or keyless.
+  let seats = [(vid, resolveLeiosSeat committee vid) | vid <- map toSeatId signerIndices]
   -- Reject all keyless-seat bits up front, before any weight is counted.
   case nonEmpty [vid | (vid, Just (LeiosSeat _ SNothing)) <- seats] of
     Just keyless -> Left (SignerWithoutKey keyless)
@@ -302,18 +308,12 @@ verifyLeiosCert committee weightRequired msg cert = do
   where
     n = leiosCommitteeSize committee
 
+    signerIndices = IntSet.toList (Bitmap.toIndices cert.leiosCertSigners)
+
+    toSeatId i = LeiosSeatId (fromIntegral @Int @Word16 i)
+
     -- Keyless seats already rejected above; 'SNothing' just keeps the total honest.
     accumSigner (LeiosSeat w' vk) (!w, !ks) =
       case vk of
         SJust k -> (w + w', k : ks)
         SNothing -> (w, ks)
-
-    bitFieldMembers (BitField bm) =
-      [LeiosSeatId (fromIntegral @Int @Word16 i) | i <- Bitmap.toIndices n bm]
-
--- | A 'LeiosCert' signers bitfield: @⌈leiosCommitteeSize\/8⌉@ bytes, MSB-first,
--- bit @i@ set iff seat @i@ signed. Newtype so it isn't confused with raw bytes.
-newtype BitField = BitField {bitFieldBitmap :: Bitmap}
-  deriving stock (Show, Eq, Generic)
-  deriving newtype (NFData)
-  deriving (NoThunks) via OnlyCheckWhnfNamed "BitField" BitField
